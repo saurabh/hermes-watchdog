@@ -15,7 +15,7 @@ hermes:
 
 probe:
   # Max age (seconds) of last Telegram poll before considering stale
-  polling_stale_seconds: 300
+  polling_stale_seconds: 600
   # Max age (seconds) of gateway log before considering stale
   log_stale_seconds: 300
 

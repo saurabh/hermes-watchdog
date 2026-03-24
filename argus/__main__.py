@@ -51,7 +51,7 @@ def load_config(config_path: str | None = None) -> dict:
             },
         },
         "probe": {
-            "polling_stale_seconds": 300,
+            "polling_stale_seconds": 600,
             "log_stale_seconds": 300,
         },
         "remediation": {

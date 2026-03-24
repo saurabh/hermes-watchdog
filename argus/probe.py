@@ -253,7 +253,7 @@ def run_probes(config: dict) -> ProbeResult:
     user_svc = hermes.get("systemd_user", True)
     gateway_log = hermes.get("logs", {}).get("gateway", "~/.hermes/logs/gateway.log")
     errors_log = hermes.get("logs", {}).get("errors", "~/.hermes/logs/errors.log")
-    stale_poll = probe_cfg.get("polling_stale_seconds", 300)
+    stale_poll = probe_cfg.get("polling_stale_seconds", 600)
     stale_log = probe_cfg.get("log_stale_seconds", 300)
 
     # Service check
