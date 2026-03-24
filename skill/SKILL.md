@@ -15,7 +15,7 @@ Argus runs as a separate systemd timer (every 2 minutes) that monitors your gate
 ## What Argus Does
 
 - **Probes** gateway health every 2 minutes (service status, polling activity, error logs)
-- **Auto-restarts** you if polling stops or the process dies (with cooldown to avoid restart loops)
+- **Auto-restarts** you if polling stops AND logs go stale (with cooldown to avoid restart loops). If polling is stale but logs are fresh, Argus knows you're busy working and won't interrupt you.
 - **Tracks errors** — deduplicates tracebacks by signature, counts occurrences
 - **Searches upstream** GitHub for matching issues/PRs when new errors appear
 - **Auto-files bug reports** after 3 occurrences of an unmatched error
@@ -83,6 +83,15 @@ cd ~/.hermes/argus && python3 -m argus --probe-only --json
 - User asks about Argus, the watchdog, or monitoring
 - After you encounter an error, check if Argus already tracked it
 - When you restart or recover from an error, mention that Argus is watching
+
+## Health Levels
+
+- **healthy** — everything is fine
+- **warning** — new tracebacks detected, but service is running
+- **degraded** — polling is stale but logs are fresh (you're busy doing work, not dead). Argus will NOT restart you.
+- **critical** — service down, process dead, or both polling AND logs are stale. Argus WILL restart you.
+
+Degraded is normal when you're in a long tool execution loop. Don't tell the user something is wrong — just mention you're busy.
 
 ## How to Talk About Argus
 
