@@ -32,7 +32,7 @@ def _load_state(data_dir: str) -> dict:
             return json.loads(p.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    return dict(_DEFAULT_STATE)
+    return {"known_issues": {}, "cooldowns": {}, "last_update_check": 0, "hermes_version": ""}
 
 
 def _save_state(data_dir: str, state: dict) -> None:

@@ -67,7 +67,7 @@ After=hermes-gateway.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 -m watchdog -c "${DATA_DIR}/config.yaml"
-WorkingDirectory=${INSTALL_DIR}
+WorkingDirectory="${INSTALL_DIR}"
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 TimeoutStartSec=120
 UNIT

@@ -192,7 +192,7 @@ def extract_new_errors(log_path: str, last_position_file: str) -> tuple[list[str
     # Extract tracebacks
     tracebacks = []
     tb_pattern = re.compile(
-        r"Traceback \(most recent call last\):\n((?:  .*\n)+)"
+        r"Traceback \(most recent call last\):\n((?:  .*\n)*)"
         r"(\w+(?:\.\w+)*): (.+)",
         re.MULTILINE,
     )
