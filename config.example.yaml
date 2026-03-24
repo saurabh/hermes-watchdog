@@ -1,0 +1,56 @@
+# hermes-watchdog configuration
+# Copy to config.yaml and adjust for your setup.
+
+hermes:
+  # Path to hermes home directory
+  home: ~/.hermes
+  # Systemd service name (user or system)
+  service: hermes-gateway
+  # Whether to use --user flag with systemctl
+  systemd_user: true
+  # Log files to monitor
+  logs:
+    gateway: ~/.hermes/logs/gateway.log
+    errors: ~/.hermes/logs/errors.log
+
+probe:
+  # Max age (seconds) of last Telegram poll before considering stale
+  polling_stale_seconds: 300
+  # Max age (seconds) of gateway log before considering stale
+  log_stale_seconds: 300
+
+remediation:
+  # Cooldown between same-level remediation actions (seconds)
+  cooldown_seconds: 300
+  # Max auto-remediation attempts before escalating
+  max_attempts: 3
+  # Escalation chain (in order)
+  chain:
+    - systemctl_restart    # Restart via systemd
+    - process_kill_restart # Kill process, let systemd restart
+    - escalate             # Notify operator
+
+upstream:
+  # GitHub repo to search/file issues against
+  repo: NousResearch/hermes-agent
+  # Create issues after N occurrences of same error (0 = disabled)
+  auto_issue_after: 3
+  # Create PRs for known fix patterns (requires fork)
+  auto_pr: false
+  # Fork repo (for PR creation)
+  fork: ""
+
+incidents:
+  # Where to store incident data
+  data_dir: ~/.hermes/watchdog
+  # Max age of resolved incidents before pruning (days)
+  retention_days: 90
+
+notify:
+  # Notification method: telegram, discord, none
+  method: none
+  # Telegram bot token + chat ID (for operator alerts)
+  telegram_bot_token: ""
+  telegram_chat_id: ""
+  # Discord webhook URL
+  discord_webhook: ""

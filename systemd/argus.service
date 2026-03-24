@@ -1,0 +1,9 @@
+[Unit]
+Description=Argus Watchdog — Hermes Gateway Health Check
+After=hermes-gateway.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -m watchdog
+WorkingDirectory=%h/.hermes/argus
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
