@@ -4,7 +4,7 @@ import json
 import logging
 import subprocess
 
-logger = logging.getLogger("watchdog.upstream")
+logger = logging.getLogger("argus.upstream")
 
 
 def _get_python_version() -> str:

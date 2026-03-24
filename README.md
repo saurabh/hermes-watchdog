@@ -69,19 +69,19 @@ Argus runs automatically via the systemd timer. You can also run it manually:
 
 ```bash
 # Check health right now
-cd ~/.hermes/argus && python3 -m watchdog --status
+cd ~/.hermes/argus && python3 -m argus --status
 
 # List all tracked issues with upstream status
-cd ~/.hermes/argus && python3 -m watchdog --issues
+cd ~/.hermes/argus && python3 -m argus --issues
 
 # Check for hermes updates and apply them
-cd ~/.hermes/argus && python3 -m watchdog --update
+cd ~/.hermes/argus && python3 -m argus --update
 
 # Run one full probe-evaluate-remediate cycle
-cd ~/.hermes/argus && python3 -m watchdog
+cd ~/.hermes/argus && python3 -m argus
 
 # Probe only (no remediation)
-cd ~/.hermes/argus && python3 -m watchdog --probe-only --json
+cd ~/.hermes/argus && python3 -m argus --probe-only --json
 ```
 
 Or just ask your Hermes agent — the skill lets it run these commands naturally:
@@ -118,6 +118,12 @@ remediation:
 upstream:
   repo: NousResearch/hermes-agent
   auto_issue_after: 3          # file bug after 3 occurrences (0 = off)
+
+notify:
+  method: none                 # telegram, discord, or none
+  telegram_bot_token: ""       # for escalation alerts
+  telegram_chat_id: ""
+  discord_webhook: ""
 ```
 
 ## Data
@@ -127,7 +133,7 @@ upstream:
 ├── config.yaml          # Your configuration
 ├── state.json           # Known issues, cooldowns, version info
 ├── health.jsonl         # Probe history (append-only)
-├── watchdog.log         # Argus logs
+├── argus.log            # Argus logs
 └── incidents/           # Markdown incident reports
     └── 2026-03-24-134500-valueerror-stop.md
 ```
@@ -143,7 +149,7 @@ When Argus detects a problem, it doesn't just blindly restart:
 | 2 | Kill process + restart | If clean restart didn't help |
 | 3 | Escalate to operator | After 3 failures |
 
-Each action has a 5-minute cooldown. Argus won't restart you more than 3 times before giving up and escalating.
+Each action has a 5-minute cooldown. Argus won't restart you more than 3 times before giving up and escalating. On escalation, Argus writes an `ESCALATION` marker file and sends a notification via the configured method (Telegram, Discord, or none).
 
 ## Error Tracking
 

@@ -1,20 +1,13 @@
 """Remediation chain — escalating restart logic with cooldowns."""
 
 import logging
-import subprocess
 import time
 
 from . import incidents
+from .notify import send_escalation, clear_escalation
+from .util import run_cmd
 
-logger = logging.getLogger("watchdog.remediate")
-
-
-def _run(cmd: list[str], timeout: int = 30) -> tuple[str, int]:
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.stdout.strip(), r.returncode
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        return str(e), -1
+logger = logging.getLogger("argus.remediate")
 
 
 def systemctl_restart(service: str, user: bool = True) -> tuple[bool, str]:
@@ -23,7 +16,7 @@ def systemctl_restart(service: str, user: bool = True) -> tuple[bool, str]:
     if user:
         cmd.append("--user")
     cmd += ["restart", service]
-    out, rc = _run(cmd)
+    out, rc = run_cmd(cmd)
     if rc == 0:
         # Wait for it to come up
         time.sleep(3)
@@ -31,7 +24,7 @@ def systemctl_restart(service: str, user: bool = True) -> tuple[bool, str]:
         if user:
             check_cmd.append("--user")
         check_cmd += ["is-active", "--quiet", service]
-        _, check_rc = _run(check_cmd)
+        _, check_rc = run_cmd(check_cmd)
         if check_rc == 0:
             return True, "Service restarted successfully"
         return False, "Service restarted but not active"
@@ -40,16 +33,14 @@ def systemctl_restart(service: str, user: bool = True) -> tuple[bool, str]:
 
 def process_kill_restart(service: str, user: bool = True) -> tuple[bool, str]:
     """Kill the hermes process and let systemd restart it."""
-    # Kill the process
-    out, rc = _run(["pkill", "-f", "hermes_cli.main gateway"])
+    run_cmd(["pkill", "-f", "hermes_cli.main gateway"])
     time.sleep(5)
 
-    # Check if systemd restarted it
     check_cmd = ["systemctl"]
     if user:
         check_cmd.append("--user")
     check_cmd += ["is-active", "--quiet", service]
-    _, check_rc = _run(check_cmd)
+    _, check_rc = run_cmd(check_cmd)
 
     if check_rc == 0:
         return True, "Process killed, systemd restarted it"
@@ -59,10 +50,10 @@ def process_kill_restart(service: str, user: bool = True) -> tuple[bool, str]:
     if user:
         start_cmd.append("--user")
     start_cmd += ["start", service]
-    _run(start_cmd)
+    run_cmd(start_cmd)
     time.sleep(3)
 
-    _, check_rc2 = _run(check_cmd)
+    _, check_rc2 = run_cmd(check_cmd)
     if check_rc2 == 0:
         return True, "Process killed, manually restarted"
     return False, "Process killed but service failed to restart"
@@ -107,8 +98,8 @@ def remediate(
     }
 
     if level in ("healthy", "warning"):
-        # Reset attempt counter when not degraded/critical
         incidents.reset_remediation_attempts(data_dir)
+        clear_escalation(data_dir)
         return result
 
     # Check attempt count
@@ -121,6 +112,12 @@ def remediate(
         )
         result["attempt"] = attempt
         logger.error(result["message"])
+        send_escalation(config, data_dir, result["message"], {
+            "level": level,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "service": service,
+        })
         return result
 
     # Determine action from chain
@@ -136,6 +133,11 @@ def remediate(
         result["escalated"] = True
         result["message"] = "Escalating to operator (chain exhausted)"
         result["attempt"] = attempt
+        send_escalation(config, data_dir, result["message"], {
+            "level": level,
+            "attempt": attempt,
+            "service": service,
+        })
         return result
 
     # Check cooldown
@@ -157,7 +159,6 @@ def remediate(
     has_updates, behind, latest = upstream.check_for_updates(hermes_home)
 
     if has_updates and tracebacks:
-        # Check if any of our known issues are fixed upstream
         for tb in tracebacks:
             if upstream.check_if_issue_fixed_upstream(hermes_home, tb):
                 logger.info(

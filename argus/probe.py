@@ -2,10 +2,11 @@
 
 import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .util import run_cmd
 
 
 @dataclass
@@ -42,22 +43,13 @@ class ProbeResult:
         }
 
 
-def _run(cmd: list[str], timeout: int = 10) -> tuple[str, int]:
-    """Run a command, return (stdout, exit_code)."""
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.stdout.strip(), r.returncode
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return "", -1
-
-
 def check_service(service: str, user: bool = True) -> tuple[bool, str]:
     """Check if systemd service is active."""
     cmd = ["systemctl"]
     if user:
         cmd.append("--user")
     cmd += ["is-active", "--quiet", service]
-    _, rc = _run(cmd)
+    _, rc = run_cmd(cmd, timeout=10)
     active = rc == 0
 
     # Get memory usage if active
@@ -66,14 +58,14 @@ def check_service(service: str, user: bool = True) -> tuple[bool, str]:
         if user:
             cmd2.append("--user")
         cmd2 += ["show", service, "--property=MemoryCurrent"]
-        out, _ = _run(cmd2)
+        out, _ = run_cmd(cmd2, timeout=10)
         return active, out.replace("MemoryCurrent=", "").strip()
     return active, "0"
 
 
 def check_process() -> tuple[bool, int | None]:
     """Check if hermes gateway process is running."""
-    out, rc = _run(["pgrep", "-f", "hermes_cli.main gateway"])
+    out, rc = run_cmd(["pgrep", "-f", "hermes_cli.main gateway"], timeout=10)
     if rc == 0 and out:
         # Return first PID
         try:
@@ -100,7 +92,7 @@ def check_polling(log_path: str) -> tuple[bool, int, str]:
 
     # Read last 500 lines efficiently
     try:
-        out, _ = _run(["tail", "-500", str(p)])
+        out, _ = run_cmd(["tail", "-500", str(p)], timeout=10)
     except Exception:
         return False, -1, ""
 

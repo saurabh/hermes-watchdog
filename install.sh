@@ -25,7 +25,7 @@ mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$DATA_DIR/incidents" "$SYSTEMD_DIR"
 
 # 2. Copy watchdog module
 echo "[1/5] Installing watchdog module..."
-cp -r watchdog/ "$INSTALL_DIR/watchdog/"
+cp -r argus/ "$INSTALL_DIR/argus/"
 
 # 3. Install Hermes skill
 echo "[2/5] Installing Hermes skill..."
@@ -66,7 +66,7 @@ After=hermes-gateway.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 -m watchdog -c "${DATA_DIR}/config.yaml"
+ExecStart=/usr/bin/python3 -m argus -c "${DATA_DIR}/config.yaml"
 WorkingDirectory="${INSTALL_DIR}"
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 TimeoutStartSec=120
@@ -92,4 +92,4 @@ echo ""
 # Run first probe
 echo "Running initial health check..."
 echo ""
-cd "$INSTALL_DIR" && python3 -m watchdog --status
+cd "$INSTALL_DIR" && python3 -m argus --status

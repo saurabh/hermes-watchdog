@@ -1,11 +1,11 @@
 """argus — self-healing watchdog for Hermes Agent Gateway.
 
 Usage:
-    python -m watchdog              # Run one probe-evaluate-remediate cycle
-    python -m watchdog --status     # Show current health + known issues
-    python -m watchdog --issues     # List tracked issues and upstream status
-    python -m watchdog --update     # Check for and apply hermes updates
-    python -m watchdog --probe-only # Run probes without remediation
+    python -m argus              # Run one probe-evaluate-remediate cycle
+    python -m argus --status     # Show current health + known issues
+    python -m argus --issues     # List tracked issues and upstream status
+    python -m argus --update     # Check for and apply hermes updates
+    python -m argus --probe-only # Run probes without remediation
 """
 
 import argparse
@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 from . import incidents, probe, upstream
+from .notify import has_escalation
 from .remediate import remediate
 
 
@@ -78,7 +79,7 @@ def get_data_dir(config: dict) -> str:
 
 def run_cycle(config: dict) -> dict:
     """Run one full probe → evaluate → track → remediate → upstream cycle."""
-    logger = logging.getLogger("watchdog")
+    logger = logging.getLogger("argus")
     data_dir = get_data_dir(config)
     os.makedirs(data_dir, exist_ok=True)
 
@@ -214,6 +215,7 @@ def show_status(config: dict) -> None:
     attempts = state.get("current_remediation_attempts", 0)
     print(f"  Remediation attempts: {attempts}")
     print(f"  Known issues:         {len(state.get('known_issues', {}))}")
+    print(f"  Escalation:           {'ACTIVE — operator intervention needed' if has_escalation(data_dir) else 'none'}")
     print(f"  Hermes version:       {state.get('hermes_version', 'unknown')}")
     print()
 
@@ -341,12 +343,12 @@ def main():
     # Setup logging
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(format=LOG_FORMAT, level=level)
-    logger = logging.getLogger("watchdog")
+    logger = logging.getLogger("argus")
 
     # Also log to file
     data_dir_default = os.path.expanduser("~/.hermes/watchdog")
     os.makedirs(data_dir_default, exist_ok=True)
-    fh = logging.FileHandler(os.path.join(data_dir_default, "watchdog.log"))
+    fh = logging.FileHandler(os.path.join(data_dir_default, "argus.log"))
     fh.setFormatter(logging.Formatter(LOG_FORMAT))
     fh.setLevel(logging.INFO)
     logging.getLogger().addHandler(fh)

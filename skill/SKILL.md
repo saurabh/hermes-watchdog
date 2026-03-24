@@ -27,19 +27,19 @@ When the user asks about your health, watchdog status, errors, or updates, use t
 
 ### Check Health Status
 ```bash
-cd ~/.hermes/argus && python3 -m watchdog --status
+cd ~/.hermes/argus && python3 -m argus --status
 ```
 Shows: health level, service state, polling age, memory, known issues count, update availability.
 
 ### List Tracked Issues
 ```bash
-cd ~/.hermes/argus && python3 -m watchdog --issues
+cd ~/.hermes/argus && python3 -m argus --issues
 ```
 Shows all errors Argus has detected, their occurrence count, and upstream status (matched/filed/unmatched).
 
 ### Check for Updates
 ```bash
-cd ~/.hermes/argus && python3 -m watchdog --update
+cd ~/.hermes/argus && python3 -m argus --update
 ```
 Checks if you're behind upstream, shows which known issues are fixed, and applies the update.
 
@@ -59,14 +59,20 @@ cat ~/.hermes/watchdog/incidents/{filename}.md
 tail -20 ~/.hermes/watchdog/health.jsonl | python3 -m json.tool
 ```
 
+### Check for Escalation
+```bash
+cat ~/.hermes/watchdog/ESCALATION 2>/dev/null || echo "No active escalation"
+```
+If this file exists, Argus has exhausted its remediation attempts and needs operator help. Tell the user immediately.
+
 ### View Watchdog Logs
 ```bash
-tail -50 ~/.hermes/watchdog/watchdog.log
+tail -50 ~/.hermes/watchdog/argus.log
 ```
 
 ### Run a Manual Probe
 ```bash
-cd ~/.hermes/argus && python3 -m watchdog --probe-only --json
+cd ~/.hermes/argus && python3 -m argus --probe-only --json
 ```
 
 ## When to Use This Skill
@@ -111,5 +117,6 @@ Argus is completely independent. If you crash, Argus still runs. If Argus crashe
 All Argus data lives in `~/.hermes/watchdog/`:
 - `state.json` — known issues, cooldowns, version tracking
 - `health.jsonl` — probe history
-- `watchdog.log` — argus's own logs
+- `argus.log` — argus's own logs
+- `ESCALATION` — present when remediation failed and operator help is needed
 - `incidents/` — markdown incident reports
