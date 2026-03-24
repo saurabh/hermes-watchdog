@@ -17,8 +17,8 @@ Your Hermes gateway can crash, freeze, or lose its Telegram polling connection â
 ## Install
 
 ```bash
-git clone https://github.com/0xbuildoor/argus
-cd argus
+git clone https://github.com/saurabh/hermes-watchdog
+cd hermes-watchdog
 chmod +x install.sh
 ./install.sh
 ```

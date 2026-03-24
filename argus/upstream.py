@@ -124,7 +124,7 @@ def file_issue(repo: str, issue: dict, hermes_version: str = "") -> str | None:
 
 ## Context
 
-This issue was automatically detected by [argus-watchdog](https://github.com/saurabh/argus), a self-healing companion for Hermes Agent Gateway. It has occurred {issue['count']} times and no existing upstream issue or PR was found matching this error pattern.
+This issue was automatically detected by [argus-watchdog](https://github.com/saurabh/hermes-watchdog), a self-healing companion for Hermes Agent Gateway. It has occurred {issue['count']} times and no existing upstream issue or PR was found matching this error pattern.
 
 **Error signature:** `{issue['signature']}`
 
