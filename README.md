@@ -2,13 +2,16 @@
 
 > *Named after Argus Panoptes — the hundred-eyed giant who never slept. Some of his eyes were always watching.*
 
-Your Hermes gateway can crash, freeze, or lose its Telegram polling connection — and just sit there, alive but deaf. Argus watches from outside, detects the failure, and fixes it before you notice.
+Your Hermes gateway can crash, freeze, or lose its polling connection — and just sit there, alive but deaf. Argus watches from outside, detects the failure, and fixes it before you notice. Works with all Hermes platforms: Telegram, Discord, Slack, WhatsApp, Matrix, IRC, and more.
 
 **Argus runs as a separate process.** It's a systemd timer, completely independent from Hermes. If your gateway goes down, Argus keeps running. If Argus somehow goes down, systemd restarts it. They never share a process.
 
 ## What You Get
 
 - **Auto-restart** — Detects stale polling, dead processes, and silent failures. Restarts with cooldowns so it doesn't loop.
+- **Zombie detection** — Catches polling zombies (process alive, logs fresh, but polling dead) by escalating after 30 minutes of degraded state.
+- **Multi-platform** — Configurable heartbeat pattern works with Telegram (`getUpdates`), Discord (`HEARTBEAT`), Slack (`socket_mode`), Matrix (`/sync`), or any platform with a detectable log signature.
+- **Smart notifications** — Recovery events flow through Hermes naturally ("I was down, Argus restarted me"). Escalations go direct to the user via Hermes's own platform credentials.
 - **Auto-update** — When a fix for a known issue exists upstream, Argus pulls it before restarting.
 - **Error tracking** — Deduplicates every traceback by signature, counts occurrences, writes incident reports.
 - **Upstream integration** — Searches GitHub for matching issues/PRs. Auto-files a bug report after 3 occurrences.
@@ -104,8 +107,10 @@ hermes:
     errors: ~/.hermes/logs/errors.log
 
 probe:
-  polling_stale_seconds: 300   # 5 min before polling is "stale"
+  polling_stale_seconds: 600   # 10 min before polling is "stale"
   log_stale_seconds: 300
+  heartbeat_pattern: "getUpdates"  # regex — see config.example.yaml for platform examples
+  max_degraded_seconds: 1800       # 30 min — escalate zombie after this
 
 remediation:
   cooldown_seconds: 300        # 5 min between restart attempts
@@ -120,10 +125,7 @@ upstream:
   auto_issue_after: 3          # file bug after 3 occurrences (0 = off)
 
 notify:
-  method: none                 # telegram, discord, or none
-  telegram_bot_token: ""       # for escalation alerts
-  telegram_chat_id: ""
-  discord_webhook: ""
+  hermes_home: ~/.hermes       # reads Hermes's own credentials (no extra tokens needed)
 ```
 
 ## Data
@@ -131,9 +133,11 @@ notify:
 ```
 ~/.hermes/watchdog/
 ├── config.yaml          # Your configuration
-├── state.json           # Known issues, cooldowns, version info
+├── state.json           # Known issues, cooldowns, version info, degraded_since
 ├── health.jsonl         # Probe history (append-only)
+├── events.jsonl         # Recovery/info events for Hermes to relay
 ├── argus.log            # Argus logs
+├── ESCALATION           # Present when operator intervention needed
 └── incidents/           # Markdown incident reports
     └── 2026-03-24-134500-valueerror-stop.md
 ```
@@ -149,7 +153,7 @@ When Argus detects a problem, it doesn't just blindly restart:
 | 2 | Kill process + restart | If clean restart didn't help |
 | 3 | Escalate to operator | After 3 failures |
 
-Each action has a 5-minute cooldown. Argus won't restart you more than 3 times before giving up and escalating. On escalation, Argus writes an `ESCALATION` marker file and sends a notification via the configured method (Telegram, Discord, or none).
+Each action has a 5-minute cooldown. Argus won't restart you more than 3 times before giving up and escalating. On escalation, Argus writes an `ESCALATION` marker file and sends a notification directly to the user via Hermes's own platform credentials (no separate tokens needed).
 
 ## Error Tracking
 

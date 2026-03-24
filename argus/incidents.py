@@ -18,7 +18,13 @@ _LOCK_FILE = ".state.lock"
 
 def _default_state() -> dict:
     """Fresh default state. Always returns a new dict with new nested dicts."""
-    return {"known_issues": {}, "cooldowns": {}, "last_update_check": 0, "hermes_version": ""}
+    return {
+        "known_issues": {},
+        "cooldowns": {},
+        "last_update_check": 0,
+        "hermes_version": "",
+        "degraded_since": None,
+    }
 
 
 def _load_state(data_dir: str) -> dict:
@@ -317,6 +323,28 @@ def reset_remediation_attempts(data_dir: str) -> None:
     """Reset remediation attempt counter (called when health returns to normal)."""
     with locked_state(data_dir) as state:
         state["current_remediation_attempts"] = 0
+
+
+def set_degraded_since(data_dir: str) -> None:
+    """Record when gateway first entered degraded state (if not already set)."""
+    with locked_state(data_dir) as state:
+        if not state.get("degraded_since"):
+            state["degraded_since"] = time.time()
+
+
+def clear_degraded_since(data_dir: str) -> None:
+    """Clear degraded timestamp when health recovers."""
+    with locked_state(data_dir) as state:
+        state.pop("degraded_since", None)
+
+
+def get_degraded_duration(data_dir: str) -> float:
+    """Return how long the gateway has been in degraded state (seconds). 0 if not degraded."""
+    state = _load_state(data_dir)  # read-only, no lock
+    since = state.get("degraded_since")
+    if since:
+        return time.time() - since
+    return 0.0
 
 
 def prune_old_incidents(data_dir: str, retention_days: int = 90) -> int:

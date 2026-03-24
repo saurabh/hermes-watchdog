@@ -53,6 +53,8 @@ def load_config(config_path: str | None = None) -> dict:
         "probe": {
             "polling_stale_seconds": 600,
             "log_stale_seconds": 300,
+            "heartbeat_pattern": "getUpdates",
+            "max_degraded_seconds": 1800,
         },
         "remediation": {
             "cooldown_seconds": 300,
@@ -89,7 +91,7 @@ def run_cycle(config: dict) -> dict:
     hermes_home = config.get("hermes", {}).get("home", "~/.hermes")
 
     # 1. Probe
-    result = probe.run_probes(config)
+    result = probe.run_probes(config, data_dir)
     probe_dict = result.to_dict()
     logger.info(
         "Probe: level=%s service=%s polling=%s errors=%d tracebacks=%d",
@@ -102,6 +104,12 @@ def run_cycle(config: dict) -> dict:
 
     # 2. Log probe result
     incidents.append_health_log(data_dir, probe_dict)
+
+    # Track degraded duration
+    if result.level == "degraded":
+        incidents.set_degraded_since(data_dir)
+    elif result.level in ("healthy", "warning"):
+        incidents.clear_degraded_since(data_dir)
 
     # 3. Track new errors
     for tb in result.new_tracebacks:
@@ -195,7 +203,8 @@ def run_cycle(config: dict) -> dict:
 def show_status(config: dict) -> None:
     """Print current health status."""
     data_dir = get_data_dir(config)
-    result = probe.run_probes(config)
+    result = probe.run_probes(config, data_dir)
+    max_degraded = config.get("probe", {}).get("max_degraded_seconds", 1800)
 
     print(f"{'=' * 60}")
     print(f"  ARGUS — Hermes Gateway Health Status")
@@ -206,6 +215,13 @@ def show_status(config: dict) -> None:
     print(f"  Memory:       {result.memory_mb} MB")
     print(f"  Log age:      {result.log_age_seconds}s")
     print(f"  Polling age:  {result.polling_age_seconds}s")
+    if result.level == "degraded" and result.degraded_duration_seconds > 0:
+        mins = int(result.degraded_duration_seconds // 60)
+        esc = int(max_degraded // 60) if max_degraded > 0 else 0
+        if esc > 0:
+            print(f"  Degraded for: {mins} min (escalates at {esc} min)")
+        else:
+            print(f"  Degraded for: {mins} min (escalation disabled)")
     print(f"  New errors:   {len(result.new_errors)}")
     print(f"  Tracebacks:   {len(result.new_tracebacks)}")
     print()

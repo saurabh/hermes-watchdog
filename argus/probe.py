@@ -24,6 +24,7 @@ class ProbeResult:
     new_tracebacks: list[dict] = field(default_factory=list)
     memory_mb: float = 0.0
     level: str = "unknown"  # healthy, warning, degraded, critical
+    degraded_duration_seconds: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -40,6 +41,7 @@ class ProbeResult:
             "traceback_count": len(self.new_tracebacks),
             "memory_mb": self.memory_mb,
             "level": self.level,
+            "degraded_duration_s": self.degraded_duration_seconds,
         }
 
 
@@ -84,8 +86,15 @@ def check_log_freshness(log_path: str) -> tuple[bool, int]:
     return True, age
 
 
-def check_polling(log_path: str) -> tuple[bool, int, str]:
-    """Check for recent Telegram getUpdates in log. Returns (active, age_seconds, last_ts)."""
+def check_polling(log_path: str, pattern: str = "getUpdates") -> tuple[bool, int, str]:
+    """Check for recent platform heartbeat in log. Returns (active, age_seconds, last_ts).
+
+    The pattern is a regex matched against each log line. Examples:
+        Telegram:  "getUpdates"
+        Discord:   "HEARTBEAT|heartbeat_ack"
+        Slack:     "apps\\.connections\\.open|socket_mode"
+        Matrix:    "/sync"
+    """
     p = Path(os.path.expanduser(log_path))
     if not p.exists():
         return False, -1, ""
@@ -96,13 +105,29 @@ def check_polling(log_path: str) -> tuple[bool, int, str]:
     except Exception:
         return False, -1, ""
 
-    # Find last getUpdates line
+    # Compile heartbeat pattern (fall back to literal match on bad regex)
+    try:
+        heartbeat_re = re.compile(pattern) if pattern else None
+    except re.error:
+        import logging
+        logging.getLogger("argus.probe").warning(
+            "Invalid heartbeat_pattern regex '%s', falling back to literal match", pattern
+        )
+        heartbeat_re = None
+
+    # Find last heartbeat line
     last_poll_ts = ""
     for line in reversed(out.split("\n")):
-        if "getUpdates" in line:
-            match = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
-            if match:
-                last_poll_ts = match.group(1)
+        matched = False
+        if heartbeat_re is not None:
+            matched = bool(heartbeat_re.search(line))
+        elif pattern:
+            matched = pattern in line
+
+        if matched:
+            ts_match = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
+            if ts_match:
+                last_poll_ts = ts_match.group(1)
             break
 
     if not last_poll_ts:
@@ -235,9 +260,10 @@ def extract_new_errors(log_path: str, last_position_file: str) -> tuple[list[str
     return error_lines, tracebacks
 
 
-def run_probes(config: dict) -> ProbeResult:
+def run_probes(config: dict, data_dir: str | None = None) -> ProbeResult:
     """Run all health probes and return results."""
     from datetime import datetime, timezone
+    from . import incidents
 
     result = ProbeResult(
         timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -245,9 +271,10 @@ def run_probes(config: dict) -> ProbeResult:
 
     hermes = config.get("hermes", {})
     probe_cfg = config.get("probe", {})
-    data_dir = os.path.expanduser(
-        config.get("incidents", {}).get("data_dir", "~/.hermes/watchdog")
-    )
+    if data_dir is None:
+        data_dir = os.path.expanduser(
+            config.get("incidents", {}).get("data_dir", "~/.hermes/watchdog")
+        )
 
     service = hermes.get("service", "hermes-gateway")
     user_svc = hermes.get("systemd_user", True)
@@ -255,6 +282,8 @@ def run_probes(config: dict) -> ProbeResult:
     errors_log = hermes.get("logs", {}).get("errors", "~/.hermes/logs/errors.log")
     stale_poll = probe_cfg.get("polling_stale_seconds", 600)
     stale_log = probe_cfg.get("log_stale_seconds", 300)
+    heartbeat_pattern = probe_cfg.get("heartbeat_pattern", "getUpdates")
+    max_degraded = probe_cfg.get("max_degraded_seconds", 1800)
 
     # Service check
     result.service_active, mem_str = check_service(service, user_svc)
@@ -271,9 +300,9 @@ def run_probes(config: dict) -> ProbeResult:
     _, result.log_age_seconds = check_log_freshness(gateway_log)
     result.log_fresh = 0 <= result.log_age_seconds < stale_log
 
-    # Polling check
+    # Polling check (configurable heartbeat pattern)
     result.polling_active, result.polling_age_seconds, result.last_poll_timestamp = (
-        check_polling(gateway_log)
+        check_polling(gateway_log, pattern=heartbeat_pattern)
     )
 
     # Error extraction
@@ -300,13 +329,20 @@ def run_probes(config: dict) -> ProbeResult:
         result.level = "critical"
     elif not result.polling_active and result.polling_age_seconds > stale_poll:
         if result.log_fresh:
-            # Polling is stale but logs are fresh — gateway is busy working,
-            # not dead. Downgrade to degraded instead of restarting it.
-            result.level = "degraded"
+            # Polling stale but logs fresh — could be busy OR a zombie.
+            # Check how long we've been in this state.
+            degraded_duration = incidents.get_degraded_duration(data_dir)
+            result.degraded_duration_seconds = degraded_duration
+            if max_degraded > 0 and degraded_duration > max_degraded:
+                # Been degraded too long — likely a polling zombie, not just busy.
+                result.level = "critical"
+            else:
+                result.level = "degraded"
         else:
             result.level = "critical"
     elif not result.log_fresh:
         result.level = "degraded"
+        result.degraded_duration_seconds = incidents.get_degraded_duration(data_dir)
     elif len(result.new_tracebacks) > 0:
         result.level = "warning"
     else:

@@ -18,6 +18,22 @@ probe:
   polling_stale_seconds: 600
   # Max age (seconds) of gateway log before considering stale
   log_stale_seconds: 300
+  # Regex pattern to detect active polling in gateway log.
+  # Set this to match your platform's polling signature.
+  # Examples:
+  #   Telegram:  getUpdates           (default)
+  #   Discord:   HEARTBEAT|heartbeat_ack
+  #   Slack:     apps\.connections\.open|socket_mode
+  #   WhatsApp:  recv|message_received
+  #   Matrix:    /sync
+  #   IRC:       PING|PONG
+  #   Generic:   poll|heartbeat|keepalive
+  heartbeat_pattern: "getUpdates"
+  # Max seconds to stay in 'degraded' before escalating to 'critical'.
+  # Catches polling zombies (process alive, logs fresh, but polling dead).
+  # Set to 0 to disable (degraded stays forever — NOT recommended).
+  # Default: 1800 (30 minutes)
+  max_degraded_seconds: 1800
 
 remediation:
   # Cooldown between same-level remediation actions (seconds)
@@ -47,10 +63,15 @@ incidents:
   retention_days: 90
 
 notify:
-  # Notification method: telegram, discord, none
-  method: none
-  # Telegram bot token + chat ID (for operator alerts)
-  telegram_bot_token: ""
-  telegram_chat_id: ""
-  # Discord webhook URL
-  discord_webhook: ""
+  # v0.2: Argus reads Hermes's own platform credentials for notifications.
+  # No separate tokens needed — Argus reads ~/.hermes/config.yaml and .env.
+  hermes_home: ~/.hermes
+  # Optional: override the auto-detected notification target
+  # override_platform: telegram
+  # override_chat_id: "123456789"
+  #
+  # Legacy v0.1 config (still works, deprecated):
+  # method: telegram
+  # telegram_bot_token: ""
+  # telegram_chat_id: ""
+  # discord_webhook: ""

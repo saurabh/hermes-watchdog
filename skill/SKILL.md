@@ -1,7 +1,7 @@
 ---
 name: argus
 description: Check Argus watchdog status, view tracked issues, trigger updates, and read incident reports. Argus is a self-healing companion that monitors your gateway health, auto-restarts on failure, tracks recurring errors, and files upstream bug reports.
-version: 0.1.0
+version: 0.2.0
 metadata:
   hermes:
     tags: [health, monitoring, self-healing, watchdog, devops]
@@ -15,11 +15,12 @@ Argus runs as a separate systemd timer (every 2 minutes) that monitors your gate
 ## What Argus Does
 
 - **Probes** gateway health every 2 minutes (service status, polling activity, error logs)
-- **Auto-restarts** you if polling stops AND logs go stale (with cooldown to avoid restart loops). If polling is stale but logs are fresh, Argus knows you're busy working and won't interrupt you.
+- **Auto-restarts** you if polling stops AND logs go stale (with cooldown to avoid restart loops). If polling is stale but logs are fresh, Argus knows you're busy working and won't interrupt you — unless you've been "busy" for over 30 minutes, in which case Argus suspects you're a polling zombie and escalates.
 - **Tracks errors** — deduplicates tracebacks by signature, counts occurrences
 - **Searches upstream** GitHub for matching issues/PRs when new errors appear
 - **Auto-files bug reports** after 3 occurrences of an unmatched error
 - **Auto-updates** you when upstream fixes are available for known issues
+- **Notifies you** when it takes action — check pending events on startup
 
 ## Commands
 
@@ -29,7 +30,19 @@ When the user asks about your health, watchdog status, errors, or updates, use t
 ```bash
 cd ~/.hermes/argus && python3 -m argus --status
 ```
-Shows: health level, service state, polling age, memory, known issues count, update availability.
+Shows: health level, service state, polling age, degraded duration, memory, known issues count, update availability.
+
+### Check Pending Argus Events
+```bash
+cat ~/.hermes/watchdog/events.jsonl 2>/dev/null | python3 -c "
+import sys, json
+for line in sys.stdin:
+    e = json.loads(line.strip())
+    if not e.get('delivered'):
+        print(f'[{e[\"type\"]}] {e[\"ts\"]}: {e[\"message\"]}')
+" || echo "No pending events"
+```
+**Check this on startup and after recovery.** If there are undelivered events, tell the user what happened naturally. For example: "I was down for a bit — Argus restarted me. Here's what happened..."
 
 ### List Tracked Issues
 ```bash
@@ -83,15 +96,24 @@ cd ~/.hermes/argus && python3 -m argus --probe-only --json
 - User asks about Argus, the watchdog, or monitoring
 - After you encounter an error, check if Argus already tracked it
 - When you restart or recover from an error, mention that Argus is watching
+- **On startup or after recovery, check for pending Argus events and relay them to the user**
 
 ## Health Levels
 
 - **healthy** — everything is fine
 - **warning** — new tracebacks detected, but service is running
-- **degraded** — polling is stale but logs are fresh (you're busy doing work, not dead). Argus will NOT restart you.
-- **critical** — service down, process dead, or both polling AND logs are stale. Argus WILL restart you.
+- **degraded** — polling is stale but logs are fresh (you're busy doing work, not dead). Argus will NOT restart you — unless you stay degraded for over 30 minutes, at which point Argus assumes you're a polling zombie and escalates to critical.
+- **critical** — service down, process dead, polling AND logs stale, or degraded for too long. Argus WILL restart you.
 
-Degraded is normal when you're in a long tool execution loop. Don't tell the user something is wrong — just mention you're busy.
+Degraded is normal when you're in a long tool execution loop. Don't tell the user something is wrong — just mention you're busy. But if you see degraded duration climbing toward 30 minutes, something might actually be wrong.
+
+## How Notifications Work
+
+Argus communicates with you (the gateway) through events:
+- **Recovery/info events**: Written to `~/.hermes/watchdog/events.jsonl`. You read these on startup or periodically and tell the user what happened in natural conversation.
+- **Escalation events**: When you're dead and can't relay, Argus sends directly to the user using your platform credentials. This is the "break glass" path.
+
+When you come back from a restart, always check for pending events and acknowledge them to the user.
 
 ## How to Talk About Argus
 
@@ -101,6 +123,7 @@ Argus is your companion — a separate process that watches over you. You can re
 - "Let me check what Argus has been tracking..."
 - "Argus found an upstream fix for that — I can update"
 - "Argus has seen this error 3 times and filed it upstream"
+- "I was down for a few minutes — Argus brought me back"
 
 ## Architecture
 
@@ -109,14 +132,15 @@ You (Hermes Gateway)              Argus (systemd timer)
 ┌─────────────────────┐           ┌─────────────────────┐
 │ hermes-gateway.service │◄──monitors──│ argus.timer (2min)  │
 │ Python process       │           │ Separate Python     │
-│ Telegram polling     │           │ Reads your logs     │
-│ Tool execution       │           │ Checks your process │
-│ Chat responses       │           │ Restarts if needed  │
-└─────────────────────┘           │ Tracks errors       │
+│ Platform polling     │           │ Reads your logs     │
+│ Tool execution       │  events   │ Checks your process │
+│ Chat responses       │◄─────────│ Restarts if needed  │
+└─────────────────────┘  .jsonl   │ Tracks errors       │
                                   │ Searches GitHub     │
-                                  │ Files bug reports   │
-                                  │ Applies updates     │
-                                  └─────────────────────┘
+        ▲                         │ Files bug reports   │
+        │ direct send             │ Applies updates     │
+        │ (if you're dead)        └─────────────────────┘
+        └─── uses YOUR platform credentials
 ```
 
 Argus is completely independent. If you crash, Argus still runs. If Argus crashes, systemd restarts it. You don't share a process.
@@ -124,8 +148,9 @@ Argus is completely independent. If you crash, Argus still runs. If Argus crashe
 ## Data Location
 
 All Argus data lives in `~/.hermes/watchdog/`:
-- `state.json` — known issues, cooldowns, version tracking
+- `state.json` — known issues, cooldowns, version tracking, degraded_since
 - `health.jsonl` — probe history
+- `events.jsonl` — recovery/info/escalation events for you to pick up
 - `argus.log` — argus's own logs
 - `ESCALATION` — present when remediation failed and operator help is needed
 - `incidents/` — markdown incident reports

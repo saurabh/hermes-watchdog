@@ -4,7 +4,7 @@ import logging
 import time
 
 from . import incidents
-from .notify import send_escalation, clear_escalation
+from .notify import send_escalation, clear_escalation, write_event
 from .util import run_cmd
 
 logger = logging.getLogger("argus.remediate")
@@ -99,6 +99,7 @@ def remediate(
 
     if level in ("healthy", "warning"):
         incidents.reset_remediation_attempts(data_dir)
+        incidents.clear_degraded_since(data_dir)
         clear_escalation(data_dir)
         return result
 
@@ -176,6 +177,8 @@ def remediate(
                     incidents.set_cooldown(data_dir, action, cooldown_secs)
                     incidents.increment_remediation_attempts(data_dir)
                     result["attempt"] = attempt + 1
+                    write_event(data_dir, "info",
+                                f"Argus applied an upstream update ({behind} commits) and restarted me.")
                     logger.info(result["message"])
                     return result
 
@@ -200,6 +203,8 @@ def remediate(
 
     if success:
         logger.info("Remediation succeeded: %s", msg)
+        write_event(data_dir, "recovery",
+                    f"I was down — Argus restarted me via {action} (attempt {attempt + 1}/{max_attempts}).")
     else:
         logger.error("Remediation failed: %s", msg)
 
