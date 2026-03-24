@@ -16,23 +16,20 @@ HEALTH_LOG = "health.jsonl"
 MAX_HEALTH_LOG_BYTES = 10_000_000  # 10 MB
 _LOCK_FILE = ".state.lock"
 
-_DEFAULT_STATE = {
-    "known_issues": {},
-    "cooldowns": {},
-    "last_update_check": 0,
-    "hermes_version": "",
-}
+def _default_state() -> dict:
+    """Fresh default state. Always returns a new dict with new nested dicts."""
+    return {"known_issues": {}, "cooldowns": {}, "last_update_check": 0, "hermes_version": ""}
 
 
 def _load_state(data_dir: str) -> dict:
-    """Load watchdog state (known issues, cooldowns, etc.). Caller must hold lock."""
+    """Load watchdog state. Safe for read-only use without lock; writers must hold lock."""
     p = Path(data_dir) / STATE_FILE
     if p.exists():
         try:
             return json.loads(p.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    return {"known_issues": {}, "cooldowns": {}, "last_update_check": 0, "hermes_version": ""}
+    return _default_state()
 
 
 def _save_state(data_dir: str, state: dict) -> None:

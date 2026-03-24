@@ -238,7 +238,7 @@ def check_if_issue_fixed_upstream(hermes_home: str, issue: dict) -> bool:
         if r.returncode == 0 and r.stdout.strip():
             logger.info(
                 "Issue %s may be fixed upstream: %s",
-                issue["id"], r.stdout.strip().split("\n")[0],
+                issue.get("id", issue.get("signature", "?")), r.stdout.strip().split("\n")[0],
             )
             return True
     except Exception:

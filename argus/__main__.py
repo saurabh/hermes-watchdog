@@ -345,15 +345,15 @@ def main():
     logging.basicConfig(format=LOG_FORMAT, level=level)
     logger = logging.getLogger("argus")
 
-    # Also log to file
-    data_dir_default = os.path.expanduser("~/.hermes/watchdog")
-    os.makedirs(data_dir_default, exist_ok=True)
-    fh = logging.FileHandler(os.path.join(data_dir_default, "argus.log"))
+    config = load_config(args.config)
+
+    # Log to file in configured data_dir
+    data_dir = get_data_dir(config)
+    os.makedirs(data_dir, exist_ok=True)
+    fh = logging.FileHandler(os.path.join(data_dir, "argus.log"))
     fh.setFormatter(logging.Formatter(LOG_FORMAT))
     fh.setLevel(logging.INFO)
     logging.getLogger().addHandler(fh)
-
-    config = load_config(args.config)
 
     if args.status:
         show_status(config)
