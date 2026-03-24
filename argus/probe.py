@@ -299,7 +299,12 @@ def run_probes(config: dict) -> ProbeResult:
     if not result.service_active or not result.process_alive:
         result.level = "critical"
     elif not result.polling_active and result.polling_age_seconds > stale_poll:
-        result.level = "critical"
+        if result.log_fresh:
+            # Polling is stale but logs are fresh — gateway is busy working,
+            # not dead. Downgrade to degraded instead of restarting it.
+            result.level = "degraded"
+        else:
+            result.level = "critical"
     elif not result.log_fresh:
         result.level = "degraded"
     elif len(result.new_tracebacks) > 0:
