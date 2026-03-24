@@ -7,6 +7,11 @@ import subprocess
 logger = logging.getLogger("watchdog.upstream")
 
 
+def _get_python_version() -> str:
+    import sys
+    return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+
+
 def _gh(args: list[str], timeout: int = 30) -> tuple[str, int]:
     """Run a gh CLI command."""
     cmd = ["gh"] + args
@@ -21,65 +26,76 @@ def _gh(args: list[str], timeout: int = 30) -> tuple[str, int]:
 def search_upstream(repo: str, issue: dict) -> str | None:
     """Search GitHub for existing issues/PRs matching an error.
 
+    Uses tight queries (error_type + file) first, then progressively broader.
+    Validates results by checking that titles/URLs contain relevant keywords
+    to avoid false positives from unrelated matches.
+
     Returns the URL of the best match, or None.
     """
     error_type = issue.get("error_type", "")
     error_message = issue.get("error_message", "")
     file_path = issue.get("file", "")
+    function_name = issue.get("function", "")
 
-    # Try specific search first: error type + file
+    # Relevance keywords — results must contain at least one to count
+    relevance_terms = set()
+    if error_type:
+        # e.g. "ValueError" → "valueerror"
+        relevance_terms.add(error_type.lower().split(".")[-1])
+    if file_path:
+        # e.g. "agent/display.py" → "display"
+        basename = file_path.split("/")[-1].replace(".py", "")
+        if basename and len(basename) > 2:
+            relevance_terms.add(basename.lower())
+    if function_name and len(function_name) > 3:
+        relevance_terms.add(function_name.lower())
+
+    # Build queries from most specific to least
     queries = []
     if file_path and error_type:
         queries.append(f"{error_type} {file_path}")
+    if error_type and function_name:
+        queries.append(f"{error_type} {function_name}")
     if error_message:
-        # Use first 60 chars of error message
-        queries.append(error_message[:60])
-    if error_type:
-        queries.append(error_type)
+        # Use first 60 chars, but strip noisy parts (paths, hashes)
+        clean_msg = error_message.split("\n")[0][:60]
+        queries.append(clean_msg)
+
+    def _is_relevant(title: str) -> bool:
+        """Check if a search result title is actually relevant to our error."""
+        title_lower = title.lower()
+        return any(term in title_lower for term in relevance_terms)
 
     for query in queries:
-        # Search issues
-        out, rc = _gh([
-            "search", "issues",
-            "--repo", repo,
-            query,
-            "--limit", "5",
-            "--json", "url,title,state",
-        ])
-        if rc == 0 and out:
+        for search_type in ("issues", "prs"):
+            cmd = [
+                "search", search_type,
+                "--repo", repo,
+                query,
+                "--limit", "5",
+                "--json", "url,title,state",
+            ]
+            out, rc = _gh(cmd)
+            if rc != 0 or not out:
+                continue
             try:
                 results = json.loads(out)
-                if results:
-                    # Prefer open issues/PRs
-                    for r in results:
-                        if r.get("state") == "OPEN":
-                            logger.info("Found upstream match: %s", r["url"])
-                            return r["url"]
-                    # Fall back to any match
-                    logger.info("Found upstream match (closed): %s", results[0]["url"])
-                    return results[0]["url"]
             except json.JSONDecodeError:
-                pass
+                continue
 
-        # Search PRs
-        out, rc = _gh([
-            "search", "prs",
-            "--repo", repo,
-            query,
-            "--limit", "5",
-            "--json", "url,title,state",
-        ])
-        if rc == 0 and out:
-            try:
-                results = json.loads(out)
-                if results:
-                    for r in results:
-                        if r.get("state") == "OPEN":
-                            logger.info("Found upstream PR: %s", r["url"])
-                            return r["url"]
-                    return results[0]["url"]
-            except json.JSONDecodeError:
-                pass
+            # Filter to relevant results only
+            relevant = [r for r in results if _is_relevant(r.get("title", ""))]
+            if not relevant:
+                continue
+
+            # Prefer open issues/PRs
+            for r in relevant:
+                if r.get("state") == "OPEN":
+                    logger.info("Found upstream match: %s", r["url"])
+                    return r["url"]
+            # Fall back to closed
+            logger.info("Found upstream match (closed): %s", relevant[0]["url"])
+            return relevant[0]["url"]
 
     return None
 
@@ -108,15 +124,15 @@ def file_issue(repo: str, issue: dict, hermes_version: str = "") -> str | None:
 
 ## Context
 
-This issue was automatically detected by [argus-watchdog](https://github.com/anthropics/argus-watchdog), a self-healing companion for Hermes Agent Gateway. It has occurred {issue['count']} times and no existing upstream issue or PR was found matching this error pattern.
+This issue was automatically detected by [argus-watchdog](https://github.com/saurabh/argus), a self-healing companion for Hermes Agent Gateway. It has occurred {issue['count']} times and no existing upstream issue or PR was found matching this error pattern.
 
 **Error signature:** `{issue['signature']}`
 
 ## Environment
 
-- **Platform:** Gateway mode (Telegram)
+- **Platform:** Gateway mode
 - **Hermes version:** {hermes_version or 'unknown'}
-- **Python:** 3.11
+- **Python:** {_get_python_version()}
 
 ---
 *Filed automatically after {issue['count']} occurrences. If this is a duplicate, please link the original issue.*
@@ -143,7 +159,6 @@ def get_hermes_version(hermes_home: str) -> str:
     """Get current hermes-agent git commit hash."""
     import os
     agent_dir = os.path.join(os.path.expanduser(hermes_home), "hermes-agent")
-    out, rc = _gh(["--git-dir", "unused"])  # dummy, we use git directly
     try:
         r = subprocess.run(
             ["git", "log", "--oneline", "-1"],
@@ -194,34 +209,40 @@ def check_for_updates(hermes_home: str) -> tuple[bool, int, str]:
 
 
 def check_if_issue_fixed_upstream(hermes_home: str, issue: dict) -> bool:
-    """Check if a known issue has been fixed in upstream commits we haven't pulled yet."""
+    """Check if a known issue has been fixed in upstream commits we haven't pulled yet.
+
+    Requires at least 2 search terms to match in the same commit (via --all-match)
+    to reduce false positives from generic terms like 'ValueError'.
+    """
     import os
     agent_dir = os.path.join(os.path.expanduser(hermes_home), "hermes-agent")
 
-    # Search unpulled commits for references to the error
     search_terms = [
         issue.get("error_type", ""),
         issue.get("file", "").split("/")[-1] if issue.get("file") else "",
         issue.get("function", ""),
     ]
+    terms = [t for t in search_terms if t and len(t) > 2]
 
-    for term in search_terms:
-        if not term:
-            continue
-        try:
-            r = subprocess.run(
-                ["git", "log", "HEAD..origin/main", "--oneline", f"--grep={term}"],
-                capture_output=True, text=True, timeout=10,
-                cwd=agent_dir,
+    if len(terms) < 2:
+        return False
+
+    # Require all terms to appear in the same commit message
+    try:
+        cmd = ["git", "log", "HEAD..origin/main", "--oneline", "--all-match"]
+        for term in terms:
+            cmd.append(f"--grep={term}")
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=10, cwd=agent_dir,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            logger.info(
+                "Issue %s may be fixed upstream: %s",
+                issue["id"], r.stdout.strip().split("\n")[0],
             )
-            if r.returncode == 0 and r.stdout.strip():
-                logger.info(
-                    "Issue %s may be fixed upstream: %s",
-                    issue["id"], r.stdout.strip().split("\n")[0],
-                )
-                return True
-        except Exception:
-            pass
+            return True
+    except Exception:
+        pass
 
     return False
 
@@ -235,6 +256,7 @@ def apply_update(hermes_home: str, service: str, systemd_user: bool = True) -> t
     agent_dir = os.path.join(os.path.expanduser(hermes_home), "hermes-agent")
 
     steps = []
+    did_stash = False
 
     # 1. Stash local changes
     try:
@@ -243,7 +265,9 @@ def apply_update(hermes_home: str, service: str, systemd_user: bool = True) -> t
             capture_output=True, text=True, timeout=15,
             cwd=agent_dir,
         )
-        steps.append(f"git stash: {r.stdout.strip()}")
+        stash_out = r.stdout.strip()
+        did_stash = r.returncode == 0 and "No local changes" not in stash_out
+        steps.append(f"git stash: {stash_out}")
     except Exception as e:
         return False, f"git stash failed: {e}"
 
@@ -255,12 +279,13 @@ def apply_update(hermes_home: str, service: str, systemd_user: bool = True) -> t
             cwd=agent_dir,
         )
         if r.returncode != 0:
-            # Try to restore
-            subprocess.run(["git", "stash", "pop"], cwd=agent_dir, capture_output=True)
+            if did_stash:
+                subprocess.run(["git", "stash", "pop"], cwd=agent_dir, capture_output=True)
             return False, f"git pull failed: {r.stderr}"
         steps.append(f"git pull: ok")
     except Exception as e:
-        subprocess.run(["git", "stash", "pop"], cwd=agent_dir, capture_output=True)
+        if did_stash:
+            subprocess.run(["git", "stash", "pop"], cwd=agent_dir, capture_output=True)
         return False, f"git pull failed: {e}"
 
     # 3. Install deps
@@ -277,17 +302,20 @@ def apply_update(hermes_home: str, service: str, systemd_user: bool = True) -> t
         except Exception as e:
             steps.append(f"pip install: failed ({e})")
 
-    # 4. Re-apply local patches (pop stash)
-    try:
-        r = subprocess.run(
-            ["git", "stash", "pop"],
-            capture_output=True, text=True, timeout=15,
-            cwd=agent_dir,
-        )
-        if r.returncode == 0 and "No stash" not in r.stdout:
-            steps.append("git stash pop: re-applied local patches")
-    except Exception:
-        pass
+    # 4. Re-apply local patches (pop stash) — only if we actually stashed
+    if did_stash:
+        try:
+            r = subprocess.run(
+                ["git", "stash", "pop"],
+                capture_output=True, text=True, timeout=15,
+                cwd=agent_dir,
+            )
+            if r.returncode == 0:
+                steps.append("git stash pop: re-applied local patches")
+            else:
+                steps.append(f"git stash pop: conflict ({r.stderr.strip()})")
+        except Exception as e:
+            steps.append(f"git stash pop: failed ({e})")
 
     # 5. Restart service
     restart_cmd = ["systemctl"]

@@ -107,9 +107,8 @@ def remediate(
     }
 
     if level in ("healthy", "warning"):
-        # Reset attempt counter when healthy
-        if level == "healthy":
-            incidents.reset_remediation_attempts(data_dir)
+        # Reset attempt counter when not degraded/critical
+        incidents.reset_remediation_attempts(data_dir)
         return result
 
     # Check attempt count

@@ -154,15 +154,18 @@ def run_cycle(config: dict) -> dict:
             time.sleep(2)  # Rate limit
 
     # 7. Check if known issues are fixed upstream (periodic, not every cycle)
-    state = incidents._load_state(data_dir)
-    last_update_check = state.get("last_update_check", 0)
-    if time.time() - last_update_check > 3600:  # Check hourly
+    with incidents.locked_state(data_dir) as state:
+        last_update_check = state.get("last_update_check", 0)
+        needs_update_check = time.time() - last_update_check > 3600
+
+    if needs_update_check:
         has_updates, behind, latest = upstream.check_for_updates(hermes_home)
         if has_updates:
             logger.info("Hermes is %d commits behind upstream (latest: %s)", behind, latest)
 
-            # Check if any known issues are fixed
-            for issue_id, issue in state.get("known_issues", {}).items():
+            # Read issues snapshot (don't hold lock during subprocess calls)
+            snapshot = incidents._load_state(data_dir)
+            for issue_id, issue in snapshot.get("known_issues", {}).items():
                 if issue.get("resolved"):
                     continue
                 if upstream.check_if_issue_fixed_upstream(hermes_home, issue):
@@ -171,9 +174,15 @@ def run_cycle(config: dict) -> dict:
                         issue_id, issue["signature"],
                     )
 
-        state["last_update_check"] = time.time()
-        state["hermes_version"] = upstream.get_hermes_version(hermes_home)
-        incidents._save_state(data_dir, state)
+        with incidents.locked_state(data_dir) as state:
+            state["last_update_check"] = time.time()
+            state["hermes_version"] = upstream.get_hermes_version(hermes_home)
+
+        # Prune old incident reports during hourly check
+        retention = config.get("incidents", {}).get("retention_days", 90)
+        pruned = incidents.prune_old_incidents(data_dir, retention)
+        if pruned:
+            logger.info("Pruned %d old incident reports", pruned)
 
     return {
         "probe": probe_dict,
@@ -200,7 +209,7 @@ def show_status(config: dict) -> None:
     print(f"  Tracebacks:   {len(result.new_tracebacks)}")
     print()
 
-    # Show remediation state
+    # Show remediation state (read-only, no lock needed)
     state = incidents._load_state(data_dir)
     attempts = state.get("current_remediation_attempts", 0)
     print(f"  Remediation attempts: {attempts}")
@@ -222,7 +231,7 @@ def show_status(config: dict) -> None:
 def show_issues(config: dict) -> None:
     """Print tracked issues."""
     data_dir = get_data_dir(config)
-    state = incidents._load_state(data_dir)
+    state = incidents._load_state(data_dir)  # read-only, no lock needed
     issues = state.get("known_issues", {})
 
     if not issues:
@@ -275,7 +284,7 @@ def do_update(config: dict) -> None:
 
     # Check if any known issues are fixed
     data_dir = get_data_dir(config)
-    state = incidents._load_state(data_dir)
+    state = incidents._load_state(data_dir)  # read-only snapshot
     fixes_found = []
     for issue_id, issue in state.get("known_issues", {}).items():
         if issue.get("resolved"):

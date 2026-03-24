@@ -49,24 +49,28 @@ fi
 # 5. Check for PyYAML
 if ! python3 -c "import yaml" 2>/dev/null; then
     echo "[4/5] Installing PyYAML..."
-    pip3 install --user pyyaml 2>/dev/null || pip install --user pyyaml
+    pip3 install --user pyyaml 2>/dev/null \
+        || pip install --user pyyaml 2>/dev/null \
+        || pip3 install --user --break-system-packages pyyaml 2>/dev/null \
+        || { echo "ERROR: Could not install pyyaml. Install manually: pip3 install pyyaml"; exit 1; }
 else
     echo "[4/5] PyYAML already installed"
 fi
 
 # 6. Install systemd units
 echo "[5/5] Installing systemd timer..."
-cat > "$SYSTEMD_DIR/argus.service" << EOF
+cat > "$SYSTEMD_DIR/argus.service" << UNIT
 [Unit]
 Description=Argus Watchdog — Hermes Gateway Health Check
 After=hermes-gateway.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 -m watchdog -c $DATA_DIR/config.yaml
-WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 -m watchdog -c "${DATA_DIR}/config.yaml"
+WorkingDirectory=${INSTALL_DIR}
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-EOF
+TimeoutStartSec=120
+UNIT
 
 cp systemd/argus.timer "$SYSTEMD_DIR/argus.timer"
 systemctl --user daemon-reload

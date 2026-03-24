@@ -7,3 +7,4 @@ Type=oneshot
 ExecStart=/usr/bin/python3 -m watchdog
 WorkingDirectory=%h/.hermes/argus
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+TimeoutStartSec=120

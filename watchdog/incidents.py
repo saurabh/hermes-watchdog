@@ -1,44 +1,89 @@
 """Incident tracking — deduplicate errors, track occurrences, write reports."""
 
+import fcntl
 import hashlib
 import json
 import os
+import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 STATE_FILE = "state.json"
 HEALTH_LOG = "health.jsonl"
+MAX_HEALTH_LOG_BYTES = 10_000_000  # 10 MB
+_LOCK_FILE = ".state.lock"
+
+_DEFAULT_STATE = {
+    "known_issues": {},
+    "cooldowns": {},
+    "last_update_check": 0,
+    "hermes_version": "",
+}
 
 
 def _load_state(data_dir: str) -> dict:
-    """Load watchdog state (known issues, cooldowns, etc.)."""
+    """Load watchdog state (known issues, cooldowns, etc.). Caller must hold lock."""
     p = Path(data_dir) / STATE_FILE
     if p.exists():
         try:
             return json.loads(p.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    return {
-        "known_issues": {},
-        "cooldowns": {},
-        "last_update_check": 0,
-        "hermes_version": "",
-    }
+    return dict(_DEFAULT_STATE)
 
 
 def _save_state(data_dir: str, state: dict) -> None:
-    """Save watchdog state."""
-    p = Path(data_dir) / STATE_FILE
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, indent=2))
+    """Save watchdog state atomically. Caller must hold lock."""
+    d = Path(data_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    target = d / STATE_FILE
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(d), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as tmp_f:
+            json.dump(state, tmp_f, indent=2)
+        os.replace(tmp_path, str(target))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+@contextmanager
+def locked_state(data_dir: str):
+    """Load state under exclusive lock, yield it, save on exit.
+
+    Usage:
+        with locked_state(data_dir) as state:
+            state["key"] = "value"
+        # state is saved atomically on exit
+    """
+    d = Path(data_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    lock_path = d / _LOCK_FILE
+
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            state = _load_state(data_dir)
+            yield state
+            _save_state(data_dir, state)
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
 
 
 def append_health_log(data_dir: str, probe_result: dict) -> None:
-    """Append probe result to health JSONL log."""
+    """Append probe result to health JSONL log, rotating if too large."""
     p = Path(data_dir) / HEALTH_LOG
     p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists() and p.stat().st_size > MAX_HEALTH_LOG_BYTES:
+        lines = p.read_text().splitlines()
+        p.write_text("\n".join(lines[len(lines) // 2 :]) + "\n")
     with open(p, "a") as f:
         f.write(json.dumps(probe_result) + "\n")
 
@@ -70,43 +115,41 @@ def track_error(data_dir: str, traceback_info: dict) -> dict:
         "sample_traceback": str,
     }
     """
-    state = _load_state(data_dir)
-    issues = state.setdefault("known_issues", {})
+    with locked_state(data_dir) as state:
+        issues = state.setdefault("known_issues", {})
 
-    sig = traceback_info["signature"]
-    issue_id = _signature_to_id(sig)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        sig = traceback_info["signature"]
+        issue_id = _signature_to_id(sig)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    if issue_id in issues:
-        issue = issues[issue_id]
-        issue["last_seen"] = now
-        issue["count"] += 1
-        # Update traceback sample if we have a better one
-        if traceback_info.get("traceback") and len(traceback_info["traceback"]) > len(
-            issue.get("sample_traceback", "")
-        ):
-            issue["sample_traceback"] = traceback_info["traceback"]
-    else:
-        issue = {
-            "id": issue_id,
-            "signature": sig,
-            "error_type": traceback_info["error_type"],
-            "error_message": traceback_info["error_message"],
-            "file": traceback_info.get("file", ""),
-            "line": traceback_info.get("line", 0),
-            "function": traceback_info.get("function", ""),
-            "first_seen": now,
-            "last_seen": now,
-            "count": 1,
-            "upstream_searched": False,
-            "upstream_issue": None,
-            "upstream_filed": None,
-            "resolved": False,
-            "sample_traceback": traceback_info.get("traceback", ""),
-        }
-        issues[issue_id] = issue
+        if issue_id in issues:
+            issue = issues[issue_id]
+            issue["last_seen"] = now
+            issue["count"] += 1
+            if traceback_info.get("traceback") and len(traceback_info["traceback"]) > len(
+                issue.get("sample_traceback", "")
+            ):
+                issue["sample_traceback"] = traceback_info["traceback"]
+        else:
+            issue = {
+                "id": issue_id,
+                "signature": sig,
+                "error_type": traceback_info["error_type"],
+                "error_message": traceback_info["error_message"],
+                "file": traceback_info.get("file", ""),
+                "line": traceback_info.get("line", 0),
+                "function": traceback_info.get("function", ""),
+                "first_seen": now,
+                "last_seen": now,
+                "count": 1,
+                "upstream_searched": False,
+                "upstream_issue": None,
+                "upstream_filed": None,
+                "resolved": False,
+                "sample_traceback": traceback_info.get("traceback", ""),
+            }
+            issues[issue_id] = issue
 
-    _save_state(data_dir, state)
     return issue
 
 
@@ -218,30 +261,27 @@ def get_issues_needing_filing(data_dir: str, threshold: int = 3) -> list[dict]:
 
 def mark_upstream_searched(data_dir: str, issue_id: str, upstream_url: str | None) -> None:
     """Mark an issue as searched upstream, optionally with matching URL."""
-    state = _load_state(data_dir)
-    issue = state.get("known_issues", {}).get(issue_id)
-    if issue:
-        issue["upstream_searched"] = True
-        issue["upstream_issue"] = upstream_url
-        _save_state(data_dir, state)
+    with locked_state(data_dir) as state:
+        issue = state.get("known_issues", {}).get(issue_id)
+        if issue:
+            issue["upstream_searched"] = True
+            issue["upstream_issue"] = upstream_url
 
 
 def mark_upstream_filed(data_dir: str, issue_id: str, filed_url: str) -> None:
     """Record the URL of an issue we filed upstream."""
-    state = _load_state(data_dir)
-    issue = state.get("known_issues", {}).get(issue_id)
-    if issue:
-        issue["upstream_filed"] = filed_url
-        _save_state(data_dir, state)
+    with locked_state(data_dir) as state:
+        issue = state.get("known_issues", {}).get(issue_id)
+        if issue:
+            issue["upstream_filed"] = filed_url
 
 
 def mark_resolved(data_dir: str, issue_id: str) -> None:
     """Mark an issue as resolved (e.g., after upstream fix merged)."""
-    state = _load_state(data_dir)
-    issue = state.get("known_issues", {}).get(issue_id)
-    if issue:
-        issue["resolved"] = True
-        _save_state(data_dir, state)
+    with locked_state(data_dir) as state:
+        issue = state.get("known_issues", {}).get(issue_id)
+        if issue:
+            issue["resolved"] = True
 
 
 def get_cooldown(data_dir: str, action: str) -> float:
@@ -257,10 +297,9 @@ def get_cooldown(data_dir: str, action: str) -> float:
 
 def set_cooldown(data_dir: str, action: str, duration_seconds: int) -> None:
     """Set a cooldown for a remediation action."""
-    state = _load_state(data_dir)
-    cooldowns = state.setdefault("cooldowns", {})
-    cooldowns[action] = time.time() + duration_seconds
-    _save_state(data_dir, state)
+    with locked_state(data_dir) as state:
+        cooldowns = state.setdefault("cooldowns", {})
+        cooldowns[action] = time.time() + duration_seconds
 
 
 def get_remediation_attempts(data_dir: str) -> int:
@@ -271,18 +310,16 @@ def get_remediation_attempts(data_dir: str) -> int:
 
 def increment_remediation_attempts(data_dir: str) -> int:
     """Increment and return remediation attempt count."""
-    state = _load_state(data_dir)
-    count = state.get("current_remediation_attempts", 0) + 1
-    state["current_remediation_attempts"] = count
-    _save_state(data_dir, state)
+    with locked_state(data_dir) as state:
+        count = state.get("current_remediation_attempts", 0) + 1
+        state["current_remediation_attempts"] = count
     return count
 
 
 def reset_remediation_attempts(data_dir: str) -> None:
     """Reset remediation attempt counter (called when health returns to normal)."""
-    state = _load_state(data_dir)
-    state["current_remediation_attempts"] = 0
-    _save_state(data_dir, state)
+    with locked_state(data_dir) as state:
+        state["current_remediation_attempts"] = 0
 
 
 def prune_old_incidents(data_dir: str, retention_days: int = 90) -> int:

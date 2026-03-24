@@ -155,17 +155,24 @@ def extract_new_errors(log_path: str, last_position_file: str) -> tuple[list[str
         except (ValueError, OSError):
             last_pos = 0
 
-    # Read new content
+    # Read new content (bounded to 5MB to prevent OOM on huge logs)
+    MAX_READ_BYTES = 5 * 1024 * 1024
     try:
         file_size = p.stat().st_size
         if file_size < last_pos:
             # Log was rotated
             last_pos = 0
 
-        with open(p, "r") as f:
+        bytes_to_read = file_size - last_pos
+        if bytes_to_read > MAX_READ_BYTES:
+            # Skip ahead — only read the last MAX_READ_BYTES
+            last_pos = file_size - MAX_READ_BYTES
+
+        with open(p, "rb") as f:
             f.seek(last_pos)
-            new_content = f.read()
+            raw = f.read(MAX_READ_BYTES)
             new_pos = f.tell()
+        new_content = raw.decode("utf-8", errors="replace")
 
         # Save position
         pos_p.parent.mkdir(parents=True, exist_ok=True)
